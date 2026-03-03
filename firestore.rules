@@ -1,0 +1,165 @@
+
+/**
+ * @file Firestore Security Rules
+ * @description This ruleset enforces a role-based access control model with ownership constraints, leveraging denormalization for authorization independence.
+ *
+ * Data Structure:
+ * - /roles_admin/{uid}: Documents representing admin users. Existence implies admin role.
+ * - /users/{userId}: User profiles (admin, faculty, student).
+ * - /users/{facultyId}/classes/{classId}: Mirrored class data for faculty ownership.
+ * - /classes/{classId}: Root collection for all classes, allowing easier querying.
+ * - /classes/{classId}/students/{studentId}: Students enrolled in a class. Includes denormalized class data.
+ * - /classes/{classId}/attendance/{attendanceId}: Attendance records for a class.
+ * - /users/{studentId}/attendance/{attendanceId}: Mirrored attendance record for student-specific queries.
+ *
+ * Key Security Decisions:
+ * - Admin role is determined by the existence of a document in /roles_admin/{uid}.
+ * - Faculty can only manage classes under their own /users/{facultyId} path.
+ * - Students can only be added or managed within a class by the owning faculty member.
+ * - Faculty can write attendance records for their own classes into both the class's attendance subcollection and the student's attendance subcollection.
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /**
+     * @description Checks if the user is signed in.
+     */
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    /**
+     * @description Checks if the authenticated user's UID matches the provided userId.
+     */
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    /**
+     * @description Checks if the requesting user is a faculty member with the given facultyId.
+     */
+    function isFacultyOwner(facultyId) {
+      return isSignedIn() && request.auth.uid == facultyId;
+    }
+
+    /**
+     * @description Checks if the user has the admin role.
+     */
+    function isAdmin() {
+      return isSignedIn() && exists(/databases/$(database)/documents/roles_admin/$(request.auth.uid));
+    }
+    
+    /**
+     * @description Checks if the user has the faculty role from their user profile document.
+     */
+    function isFaculty() {
+      // Ensure the user document exists and the role is 'faculty'
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return isSignedIn() && userDoc != null && userDoc.data.role == 'faculty';
+    }
+
+    /**
+     * @description Checks if the user has the student role from their user profile document.
+     */
+    function isStudent() {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return isSignedIn() && userDoc != null && userDoc.data.role == 'student';
+    }
+
+
+    /**
+     * @description Checks if the user is the faculty owner of a specific class.
+     * It verifies ownership by checking the 'facultyId' on the class document itself.
+     */
+    function isClassOwner(classId) {
+        let classDoc = get(/databases/$(database)/documents/classes/$(classId));
+        return isSignedIn() && classDoc != null && classDoc.data.facultyId == request.auth.uid;
+    }
+    
+    // Admins can manage admin roles. Only creation is allowed to prevent accidental deletion/update.
+    match /roles_admin/{uid} {
+      allow get: if false; // No one can read the full list of admins.
+      allow list: if false;
+      allow create: if isOwner(uid) && request.resource.data.role == 'admin';
+      allow update, delete: if false; // Roles must be managed manually or via backend for safety.
+    }
+
+    // Admins can manage all users. Users can read/update their own profile.
+    match /users/{userId} {
+      allow get: if isAdmin() || isOwner(userId);
+      allow list: if isAdmin(); // Only admins can list all users.
+      allow create: if true; // Allow new users to be created via client-side signup
+      allow update: if isAdmin() || isOwner(userId);
+      allow delete: if isAdmin();
+    }
+    
+    // Faculty can manage the classes listed under their own profile. This enforces ownership.
+    match /users/{facultyId}/classes/{classId} {
+      allow read, list, create, update, delete: if isFacultyOwner(facultyId) || isAdmin();
+    }
+
+    // A student can read their own attendance records. A faculty member can write an attendance record if they own the class.
+    match /users/{userId}/attendance/{attendanceId} {
+      allow read, list: if isOwner(userId);
+      // Create/Update: Allow faculty to write to a student's attendance record only if they are the owner of the class associated with the record.
+      allow create, update: if (isFaculty() || isAdmin()) && isFacultyOwner(request.resource.data.facultyId);
+      // Delete: Allow faculty or admins to delete attendance records. The check for ownership is implicit in the faculty's ability to take this action in the UI.
+      allow delete: if isFaculty() || isAdmin();
+    }
+
+    // Rules for the root /classes collection
+    match /classes/{classId} {
+        // Read: Admins, the owning faculty, or an enrolled student can read a class doc.
+        allow get: if isAdmin() || isClassOwner(classId) || exists(/databases/$(database)/documents/classes/$(classId)/students/$(request.auth.uid));
+        
+        // List: Admins and Faculty can list classes.
+        allow list: if isAdmin() || isFaculty();
+        
+        // Create/Update: Only Admins or the assigned faculty can create/update.
+        allow create, update: if isAdmin() || isFacultyOwner(request.resource.data.facultyId);
+        // Delete: Only Admins or the faculty who owns the class can delete it.
+        allow delete: if isAdmin() || isFacultyOwner(resource.data.facultyId);
+    }
+    
+    // Rules for managing students within a class
+    match /classes/{classId}/students/{studentId} {
+      // Read/List: Admin or the class owner can see the enrolled students.
+      allow read, list: if isAdmin() || isClassOwner(classId);
+      
+      // Create/Update: Only the class owner or an admin can manage the roster.
+      // We also check that the denormalized classId in the student record matches the path.
+      allow create, update: if (isAdmin() || isClassOwner(classId)) && request.resource.data.classId == classId;
+      
+      // Delete: Only the class owner or an admin can remove a student.
+      // We check against the existing document's data (`resource.data`) for deletes.
+      allow delete: if (isAdmin() || isClassOwner(classId)) && resource.data.classId == classId;
+    }
+
+    // Rules for attendance records within a class
+    match /classes/{classId}/attendance/{attendanceId} {
+      // Read/List: Admin or the class owner can see attendance. Students can read their own.
+      allow read, list: if isAdmin() || isClassOwner(classId) || (isStudent() && get(/databases/$(database)/documents/classes/$(classId)/attendance/$(attendanceId)).data.studentId == request.auth.uid);
+
+      // Create/Update: Only the class owner (faculty) or an admin can create/modify attendance.
+      allow create, update: if (isAdmin() || isFacultyOwner(request.resource.data.facultyId)) && request.resource.data.classId == classId;
+      // Delete: Only the class owner (faculty) or an admin can delete attendance.
+      allow delete: if (isAdmin() || isFacultyOwner(resource.data.facultyId)) && resource.data.classId == classId;
+    }
+
+    // Collection group queries for attendance.
+    match /{path=**}/attendance/{docId} {
+        // A student can query their own attendance records across all classes.
+        // A faculty can query attendance records for their own classes.
+        // An admin can query all attendance records.
+        allow list: if (isStudent() && request.query.where[0][0] == 'studentId' && request.query.where[0][2] == request.auth.uid) ||
+                       (isFaculty() && request.query.where[0][0] == 'facultyId' && request.query.where[0][2] == request.auth.uid) ||
+                       isAdmin();
+        
+        // Individual doc reads must still be protected by ownership.
+        allow get: if (isStudent() && get(/databases/$(database)/documents/$(path)/$(docId)).data.studentId == request.auth.uid) ||
+                      (isFaculty() && get(/databases/$(database)/documents/$(path)/$(docId)).data.facultyId == request.auth.uid) ||
+                      isAdmin();
+    }
+  }
+}

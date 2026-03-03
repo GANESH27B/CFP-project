@@ -1,0 +1,277 @@
+{
+  "entities": {
+    "Admin": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Admin",
+      "type": "object",
+      "description": "Represents an administrator user with elevated privileges.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Admin entity."
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the administrator.",
+          "format": "email"
+        },
+        "name": {
+          "type": "string",
+          "description": "Full name of the administrator."
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "name"
+      ]
+    },
+    "Faculty": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Faculty",
+      "type": "object",
+      "description": "Represents a faculty member.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Faculty entity."
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the faculty member.",
+          "format": "email"
+        },
+        "name": {
+          "type": "string",
+          "description": "Full name of the faculty member."
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "name"
+      ]
+    },
+    "Student": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Student",
+      "type": "object",
+      "description": "Represents a student.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Student entity."
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the student.",
+          "format": "email"
+        },
+        "name": {
+          "type": "string",
+          "description": "Full name of the student."
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "name"
+      ]
+    },
+    "Class": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Class",
+      "type": "object",
+      "description": "Represents a class or course.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Class entity."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the class (e.g., 'Math 101')."
+        },
+        "section": {
+          "type": "string",
+          "description": "Section of the class (e.g., 'A', 'B')."
+        },
+        "facultyId": {
+          "type": "string",
+          "description": "Reference to Faculty. (Relationship: Faculty 1:N Class)"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "section",
+        "facultyId"
+      ]
+    },
+    "Attendance": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Attendance",
+      "type": "object",
+      "description": "Represents a student's attendance record for a specific class.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Attendance entity."
+        },
+        "studentId": {
+          "type": "string",
+          "description": "Reference to Student. (Relationship: Student 1:N Attendance)"
+        },
+        "classId": {
+          "type": "string",
+          "description": "Reference to Class. (Relationship: Class 1:N Attendance)"
+        },
+        "facultyId": {
+            "type": "string",
+            "description": "Denormalized reference to the Faculty who owns the class."
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of the attendance record.",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Present", "Absent"],
+          "description": "Indicates whether the student was present or absent."
+        }
+      },
+      "required": [
+        "id",
+        "studentId",
+        "classId",
+        "facultyId",
+        "date",
+        "status"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/roles_admin/{uid}",
+        "definition": {
+          "entityName": "Admin",
+          "schema": {
+            "$ref": "#/backend/entities/Admin"
+          },
+          "description": "Collection to store admin user IDs. Presence of a document indicates admin role.",
+          "params": [
+            {
+              "name": "uid",
+              "description": "Firebase Auth UID of the administrator."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}",
+        "definition": {
+          "entityName": "Faculty",
+          "schema": {
+            "$ref": "#/backend/entities/Faculty"
+          },
+          "description": "Collection for faculty member profiles.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "Firebase Auth UID of the user."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{facultyId}/classes/{classId}",
+        "definition": {
+          "entityName": "Class",
+          "schema": {
+            "$ref": "#/backend/entities/Class"
+          },
+          "description": "Subcollection for classes created and owned by a faculty member.",
+          "params": [
+            {
+              "name": "facultyId",
+              "description": "Firebase Auth UID of the faculty member."
+            },
+            {
+              "name": "classId",
+              "description": "Unique identifier for the class."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{studentId}/attendance/{attendanceId}",
+        "definition": {
+          "entityName": "Attendance",
+          "schema": {
+            "$ref": "#/backend/entities/Attendance"
+          },
+          "description": "Subcollection for a student's attendance records. A faculty member can write to this path if they own the class associated with the attendance record.",
+          "params": [
+            {
+              "name": "studentId",
+              "description": "Firebase Auth UID of the student."
+            },
+            {
+              "name": "attendanceId",
+              "description": "Unique identifier for the attendance record."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/classes/{classId}/students/{studentId}",
+        "definition": {
+          "entityName": "Student",
+          "schema": {
+            "$ref": "#/backend/entities/Student"
+          },
+          "description": "Subcollection for students enrolled in a specific class. Includes a denormalized 'classId' field for authorization independence within security rules.",
+          "params": [
+            {
+              "name": "classId",
+              "description": "Unique identifier for the class."
+            },
+            {
+              "name": "studentId",
+              "description": "Unique identifier for the student."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/classes/{classId}/attendance/{attendanceId}",
+        "definition": {
+          "entityName": "Attendance",
+          "schema": {
+            "$ref": "#/backend/entities/Attendance"
+          },
+          "description": "Subcollection for attendance records for a specific class. Includes denormalized 'classId' and 'studentId' for authorization independence.",
+          "params": [
+            {
+              "name": "classId",
+              "description": "Unique identifier for the class."
+            },
+            {
+              "name": "attendanceId",
+              "description": "Unique identifier for the attendance record."
+            }
+          ]
+        }
+      }
+    ],
+    "reasoning": "The Firestore data structure is designed to ensure security, scalability, and debuggability, following the principles of Authorization Independence, Clarity of Intent, DBAC, and QAPs. It leverages denormalization to avoid hierarchical authorization dependencies and structural segregation to maintain homogeneous security postures within collections.\n\n*   **Authorization Independence**: Achieved through denormalization. For instance, the `Student` documents, located within `classes/{classId}/students/{studentId}`, include the `classId`. This eliminates the need for security rules to traverse up the hierarchy to validate the class. Instead, rules can validate the `classId` directly on the `Student` document, enabling atomic operations.\n\n*   **Structural Segregation**: Each collection houses documents with similar access requirements. For instance, admin roles are stored separately in `/roles_admin/{uid}`. User-owned data (e.g., Classes owned by Faculty) are stored in `/users/{facultyId}/classes/{classId}`. A student's attendance is stored under their user profile at `/users/{studentId}/attendance/{attendanceId}`. This segregation simplifies security rules by ensuring a consistent security posture within each collection.\n\n*   **QAPs**: Secured list operations are enabled through structural segregation. Admins can list faculty and students. Faculty can only list students in their class. Students can list their own attendance records directly.\n\n*   **DBAC**: Roles are managed directly in the database via `/roles_admin/{uid}`. This approach avoids reliance on custom claims, adhering to the DBAC principle and keeping authorization simple and auditable.\n\n*   **Invariants**: The structure also supports the integrity of relationships. For example, the `classId` in the `Student` entity maintains the relationship between a student and their class, preventing orphaned student records.\n\n**Justification for Paths:**\n\n*   `/roles_admin/{uid}`: Uses **Existence over Content** for global admin roles. The existence of a document indicates admin privileges.\n*   `/users/{userId}`: Root collection for all user profiles.\n*   `/users/{facultyId}/classes/{classId}`: Path-based ownership for faculty-created classes, ensuring only the owning faculty can manage their classes.\n*   `/users/{studentId}/attendance/{attendanceId}`: Stores all attendance for a single student, simplifying student-wise queries.\n*   `/classes/{classId}/students/{studentId}`: A subcollection for managing students within a class.  Includes denormalized `classId` for authorization independence.\n*   `/classes/{classId}/attendance/{attendanceId}`: Subcollection for attendance records within a class, ensuring clear association and segregation. Includes denormalized `classId` and `studentId` for authorization independence."
+  }
+}
