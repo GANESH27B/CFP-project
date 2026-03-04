@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/mongodb';
 import type { User } from '@/lib/types';
 import { getAuthContext } from '@/lib/server-auth';
+import bcrypt from 'bcryptjs';
 
 export async function GET(req: NextRequest) {
   const auth = await getAuthContext();
@@ -31,6 +32,8 @@ export async function GET(req: NextRequest) {
     registrationNumber: doc.registrationNumber,
     classId: doc.classId,
     studentId: doc.studentId,
+    // Return a boolean flag instead of the full vector to avoid large payloads
+    faceDescriptor: doc.faceDescriptor ? true : undefined,
   }));
 
   return NextResponse.json({ users });
@@ -47,10 +50,14 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { name, email, role, registrationNumber } = body as Partial<User>;
+  const { name, email, role, registrationNumber, password } = body as Partial<User> & { password?: string };
 
   if (!name || !email || !role) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+
+  if (!password || password.length < 6) {
+    return NextResponse.json({ error: 'Password must be at least 6 characters' }, { status: 400 });
   }
 
   const db = await getDb();
@@ -61,10 +68,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Email already in use' }, { status: 409 });
   }
 
+  // Hash the password so the new user can log in immediately
+  const passwordHash = await bcrypt.hash(password, 10);
+
   const doc = {
     name,
     email,
     role,
+    passwordHash,
     registrationNumber,
     avatarUrl: `https://picsum.photos/seed/${encodeURIComponent(email)}/40/40`,
     status: 'Active' as const,
@@ -86,4 +97,3 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ user }, { status: 201 });
 }
-

@@ -8,7 +8,7 @@ export type User = {
   avatarUrl: string;
   status: "Active" | "Inactive";
   registrationNumber?: string;
-  faceDescriptor?: string | number[];
+  faceDescriptor?: string | number[] | true; // `true` used as a lightweight enrollment-status flag in API list responses
   classId?: string; // This represents enrollment in a specific class instance for a term, not the general course.
   studentId?: string; // Explicitly added for querying enrollments
 };

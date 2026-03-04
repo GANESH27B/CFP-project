@@ -55,7 +55,11 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-export function AddUserDialog() {
+interface AddUserDialogProps {
+  onSuccess?: () => void;
+}
+
+export function AddUserDialog({ onSuccess }: AddUserDialogProps = {}) {
   const [open, setOpen] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const { toast } = useToast();
@@ -81,6 +85,7 @@ export function AddUserDialog() {
         body: JSON.stringify({
           name: values.name,
           email: values.email,
+          password: values.password,
           role: values.role,
           registrationNumber: values.role === 'student' ? values.registrationNumber : undefined,
         }),
@@ -98,8 +103,9 @@ export function AddUserDialog() {
 
       setOpen(false);
       form.reset();
-      // Simple approach: reload to refresh the users list
-      window.location.reload();
+      if (onSuccess) {
+        onSuccess();
+      }
     } catch (error: any) {
       toast({
         variant: 'destructive',
