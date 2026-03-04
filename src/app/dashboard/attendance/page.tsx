@@ -26,7 +26,7 @@ import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { loadFaceApiModels, getFaceEmbedding } from "@/lib/face-api";
+import { loadFaceApiModels, getFaceEmbedding, detectFacePosition } from "@/lib/face-api";
 
 const scannerConfig = {
   fps: 10,
@@ -64,6 +64,10 @@ export default function AttendancePage() {
   const [manualRegNumber, setManualRegNumber] = useState("");
   const [lastScanResult, setLastScanResult] = useState<ScanResult | null>(null);
   const [loadingFaceId, setLoadingFaceId] = useState(false);
+  const [faceGuidance, setFaceGuidance] = useState<string>('Align your face in the circle');
+  const [detectionStatus, setDetectionStatus] = useState<'idle' | 'found' | 'not_found'>('idle');
+  const [matchConfidence, setMatchConfidence] = useState<number>(0);
+  const faceDetectionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [scannerState, setScannerState] = useState<ScannerState>('IDLE');
@@ -82,6 +86,69 @@ export default function AttendancePage() {
     };
     loadModels();
   }, []);
+
+  // Mirror the camera video when face mode is active
+  useEffect(() => {
+    if (isFaceMode && scannerState === 'SCANNING') {
+      const applyMirror = () => {
+        const video = document.querySelector('#reader video') as HTMLVideoElement | null;
+        if (video && !video.style.transform) {
+          video.style.transform = 'scaleX(-1)';
+          video.style.transition = 'transform 0.3s ease';
+        }
+      };
+      const t = setInterval(applyMirror, 200);
+      return () => clearInterval(t);
+    } else {
+      const video = document.querySelector('#reader video') as HTMLVideoElement | null;
+      if (video) video.style.transform = '';
+    }
+  }, [isFaceMode, scannerState]);
+
+  // Real-time face position guidance loop
+  useEffect(() => {
+    if (isFaceMode && scannerState === 'SCANNING' && modelsLoaded) {
+      faceDetectionIntervalRef.current = setInterval(async () => {
+        const video = document.querySelector('#reader video') as HTMLVideoElement | null;
+        if (!video || !video.videoWidth) return;
+        try {
+          const det = await detectFacePosition(video);
+          if (!det) {
+            setDetectionStatus('not_found');
+            setFaceGuidance('No face detected — look at camera');
+            return;
+          }
+          setDetectionStatus('found');
+          const { x, y, width, height } = det.detection.box;
+          const vw = video.videoWidth;
+          const vh = video.videoHeight;
+          const cx = (x + width / 2) / vw;
+          const cy = (y + height / 2) / vh;
+          const faceRatio = width / vw;
+          if (faceRatio < 0.18) { setFaceGuidance('Move closer 🔍'); return; }
+          if (faceRatio > 0.60) { setFaceGuidance('Move back ↔'); return; }
+          if (cx < 0.30) { setFaceGuidance('Move right ▶'); return; }
+          if (cx > 0.70) { setFaceGuidance('Move left ◀'); return; }
+          if (cy < 0.20) { setFaceGuidance('Move down ▼'); return; }
+          if (cy > 0.75) { setFaceGuidance('Move up ▲'); return; }
+          setFaceGuidance('✓ Perfect! Press Scan to identify');
+        } catch { /* ignore */ }
+      }, 800);
+    } else {
+      if (faceDetectionIntervalRef.current) {
+        clearInterval(faceDetectionIntervalRef.current);
+        faceDetectionIntervalRef.current = null;
+      }
+      setDetectionStatus('idle');
+      setFaceGuidance('Align your face in the circle');
+    }
+    return () => {
+      if (faceDetectionIntervalRef.current) {
+        clearInterval(faceDetectionIntervalRef.current);
+        faceDetectionIntervalRef.current = null;
+      }
+    };
+  }, [isFaceMode, scannerState, modelsLoaded]);
 
   const { classes: allSystemClasses, isLoading: isLoadingClasses } = useClasses();
 
@@ -237,9 +304,11 @@ export default function AttendancePage() {
 
       const result = await response.json();
       if (result.studentId) {
+        setMatchConfidence(Math.round((result.confidence || 0) * 100));
         await markAttendance(result.studentId);
         toast({ title: "Face Identified", description: result.message, className: "bg-green-100 dark:bg-green-900 border-green-500" });
       } else {
+        setMatchConfidence(0);
         setLastScanResult({ status: 'not_found', message: result.message || "No matching student found." });
         toast({ variant: "destructive", title: "No Match", description: "Face does not match any enrolled student." });
       }
@@ -349,16 +418,57 @@ export default function AttendancePage() {
     }
 
     if (isFaceMode && scannerState === 'SCANNING') {
+      const isGood = faceGuidance.startsWith('✓');
+      const isNotFound = detectionStatus === 'not_found';
       return (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="w-64 h-64 border-4 border-primary rounded-full border-dashed animate-[spin_10s_linear_infinite] opacity-50"></div>
-          <div className="absolute w-48 h-48 border-2 border-primary rounded-full flex items-center justify-center">
-            <div className="w-full h-0.5 bg-primary/30 animate-pulse"></div>
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          {/* Outer spinning ring - changes colour based on detection state */}
+          <div className={cn(
+            "w-64 h-64 rounded-full border-4 border-dashed transition-colors duration-500",
+            isGood
+              ? "border-green-400 animate-[spin_5s_linear_infinite]"
+              : isNotFound
+                ? "border-red-400/60 animate-[spin_20s_linear_infinite]"
+                : "border-primary animate-[spin_10s_linear_infinite]"
+          )} />
+          {/* Inner guide circle */}
+          <div className={cn(
+            "absolute w-48 h-48 rounded-full border-2 flex items-center justify-center transition-colors duration-300 overflow-hidden",
+            isGood ? "border-green-400/80" : isNotFound ? "border-red-400/50" : "border-primary/70"
+          )}>
+            {!isNotFound && (
+              <div className={cn(
+                "w-full h-0.5 animate-pulse",
+                isGood ? "bg-green-400/50" : "bg-primary/30"
+              )} />
+            )}
           </div>
-          <div className="absolute bottom-4 left-0 right-0 text-center">
-            <Badge variant="outline" className="bg-background/80 backdrop-blur-sm text-[10px] py-0 px-2 border-primary/50 text-primary animate-pulse">
-              ALIGN FACE WITHIN CIRCLE
-            </Badge>
+          {/* Real-time face guidance badge at top */}
+          <div className="absolute top-3 left-2 right-2 flex justify-center">
+            <div className={cn(
+              "px-3 py-1.5 rounded-full text-[12px] font-bold tracking-wide backdrop-blur-md border shadow-lg transition-all duration-300",
+              isGood
+                ? "bg-green-950/90 border-green-500/60 text-green-300"
+                : isNotFound
+                  ? "bg-red-950/90 border-red-500/60 text-red-300 animate-pulse"
+                  : "bg-black/70 border-primary/50 text-primary animate-pulse"
+            )}>
+              {faceGuidance}
+            </div>
+          </div>
+          {/* Progress dots + label at bottom */}
+          <div className="absolute bottom-3 left-0 right-0 flex flex-col items-center gap-1.5">
+            <div className="flex gap-1.5">
+              {[0, 1, 2, 3, 4].map(i => (
+                <div key={i} className={cn(
+                  "w-1.5 h-1.5 rounded-full transition-all duration-300",
+                  isGood ? "bg-green-400" :
+                    isNotFound ? (i === 2 ? "bg-red-400" : "bg-red-400/25") :
+                      i < 3 ? "bg-primary" : "bg-primary/30"
+                )} />
+              ))}
+            </div>
+            <span className="text-[9px] text-white/40 uppercase tracking-widest">Face Recognition Active</span>
           </div>
         </div>
       )
@@ -474,16 +584,35 @@ export default function AttendancePage() {
           </CardHeader>
           <CardContent>
             {isFaceMode && useScanner && sessionActive && scannerState === 'SCANNING' && (
-              <div className="mb-4">
+              <div className="mb-4 space-y-2">
+                {matchConfidence > 0 && (
+                  <div className="flex items-center gap-4 p-3 rounded-lg bg-secondary border border-primary/10">
+                    <CircularProgress percentage={matchConfidence} />
+                    <div>
+                      <p className="text-sm font-semibold">Last Match Score</p>
+                      <p className={cn(
+                        "text-xs font-medium",
+                        matchConfidence >= 80 ? "text-green-500" : matchConfidence >= 60 ? "text-yellow-500" : "text-red-500"
+                      )}>
+                        {matchConfidence >= 80 ? '✓ Strong match' : matchConfidence >= 60 ? '~ Weak match' : '✗ No match'}
+                      </p>
+                    </div>
+                  </div>
+                )}
                 <Button
                   size="sm"
                   variant="secondary"
-                  className="w-full h-10 gap-2 border-primary/20 hover:border-primary"
+                  className={cn(
+                    "w-full h-10 gap-2 border transition-all duration-200",
+                    detectionStatus === 'found' && faceGuidance.startsWith('✓')
+                      ? "border-green-500/40 bg-green-500/10 hover:bg-green-500/20 text-green-600 dark:text-green-400"
+                      : "border-primary/20 hover:border-primary"
+                  )}
                   onClick={performFaceIdentification}
-                  disabled={loadingFaceId}
+                  disabled={loadingFaceId || !modelsLoaded}
                 >
-                  {loadingFaceId ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserIcon className="h-4 w-4 text-primary" />}
-                  {loadingFaceId ? "Identifying..." : "Scan & Identify Face"}
+                  {loadingFaceId ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserIcon className="h-4 w-4" />}
+                  {loadingFaceId ? "Identifying..." : !modelsLoaded ? "Loading Models..." : "Scan & Identify Face"}
                 </Button>
               </div>
             )}
@@ -598,6 +727,38 @@ export default function AttendancePage() {
             </div>
           </CardContent>
         </Card>
+      </div>
+    </div>
+  );
+}
+
+function CircularProgress({ percentage }: { percentage: number }) {
+  const size = 72;
+  const strokeWidth = 7;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (Math.min(100, Math.max(0, percentage)) / 100) * circumference;
+  const color = percentage >= 80 ? '#22c55e' : percentage >= 60 ? '#f59e0b' : '#ef4444';
+  return (
+    <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="absolute top-0 left-0 -rotate-90">
+        <circle
+          cx={size / 2} cy={size / 2} r={radius}
+          fill="none" stroke="currentColor" strokeWidth={strokeWidth}
+          className="text-muted-foreground/20"
+        />
+        <circle
+          cx={size / 2} cy={size / 2} r={radius}
+          fill="none" stroke={color} strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          style={{ transition: 'stroke-dashoffset 0.6s ease, stroke 0.4s ease' }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-sm font-bold leading-none" style={{ color }}>{percentage}%</span>
+        <span className="text-[9px] text-muted-foreground mt-0.5">match</span>
       </div>
     </div>
   );

@@ -25,3 +25,10 @@ export async function getFaceEmbedding(input: HTMLImageElement | HTMLVideoElemen
 export function computeFaceDistance(descriptor1: number[], descriptor2: number[]) {
     return faceapi.euclideanDistance(descriptor1, descriptor2);
 }
+
+export async function detectFacePosition(input: HTMLVideoElement) {
+    const detection = await faceapi
+        .detectSingleFace(input)
+        .withFaceLandmarks();
+    return detection ?? null;
+}

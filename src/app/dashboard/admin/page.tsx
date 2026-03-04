@@ -3,17 +3,18 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Users, BookOpen, Percent, TrendingUp, TrendingDown, ScanLine, User as UserIcon } from "lucide-react";
+import { Users, BookOpen, Percent, TrendingUp, TrendingDown, ScanLine, User as UserIcon, Camera, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, LineChart, Line } from "recharts";
 import { useFirestore, useMemoFirebase, useCollection } from "@/firebase";
 import { collection, collectionGroup } from "firebase/firestore";
 import { User, Class, AttendanceRecord } from "@/lib/types";
-import { useMemo } from "react";
+import { useMemo, useState, useRef, useEffect, useCallback } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format, parseISO } from 'date-fns';
 import { AddClassDialog } from "@/app/dashboard/classes/components/add-class-dialog";
@@ -21,6 +22,13 @@ import { useUsers } from "@/hooks/use-users";
 import { useClasses } from "@/hooks/use-classes";
 import { useAttendance } from "@/hooks/use-attendance";
 import Link from "next/link";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { loadFaceApiModels, getFaceEmbedding } from "@/lib/face-api";
+import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 
 const chartConfig = {
   attendance: {
@@ -209,6 +217,10 @@ export default function AdminDashboardPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Face Biometric Enrollment Management */}
+      <FaceEnrollmentSection students={users?.filter(u => u.role === 'student') || []} isLoading={isLoadingUsers} />
+
       <div className="grid gap-4 grid-cols-1 lg:grid-cols-7">
         <Card className="lg:col-span-4">
           <CardHeader>
@@ -298,5 +310,260 @@ export default function AdminDashboardPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────
+   Face Biometric Enrollment Section (admin use)
+───────────────────────────────────────────────────────── */
+function FaceEnrollmentSection({ students, isLoading }: { students: User[]; isLoading: boolean }) {
+  const [search, setSearch] = useState('');
+  const [selectedStudent, setSelectedStudent] = useState<User | null>(null);
+  const [localEnrolled, setLocalEnrolled] = useState<Set<string>>(new Set());
+
+  // Pre-populate enrolled set from fetched data
+  useEffect(() => {
+    const enrolled = new Set(students.filter(s => !!s.faceDescriptor).map(s => s.id));
+    setLocalEnrolled(enrolled);
+  }, [students]);
+
+  const filtered = useMemo(() =>
+    students.filter(s =>
+      s.name.toLowerCase().includes(search.toLowerCase()) ||
+      (s.registrationNumber || '').toLowerCase().includes(search.toLowerCase())
+    ), [students, search]);
+
+  const enrolledCount = students.filter(s => localEnrolled.has(s.id)).length;
+
+  return (
+    <>
+      <Card className="border-primary/20">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Camera className="h-5 w-5 text-primary" />
+                Face Biometric Enrollment
+              </CardTitle>
+              <CardDescription>Enroll students' faces for biometric attendance identification.</CardDescription>
+            </div>
+            <Badge variant="outline" className="text-sm px-3 py-1">
+              {enrolledCount} / {students.length} Enrolled
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Input
+            placeholder="Search by name or registration number..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="max-w-sm"
+          />
+          {isLoading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-16 rounded-lg" />)}
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="text-muted-foreground text-sm py-6 text-center">No students found.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto pr-1">
+              {filtered.map(student => {
+                const isEnrolled = localEnrolled.has(student.id);
+                return (
+                  <div
+                    key={student.id}
+                    className={cn(
+                      "flex items-center gap-3 p-3 rounded-lg border transition-all cursor-pointer hover:border-primary/50",
+                      isEnrolled ? "border-green-500/30 bg-green-500/5" : "border-border bg-muted/30"
+                    )}
+                    onClick={() => setSelectedStudent(student)}
+                  >
+                    <Avatar className="h-9 w-9 flex-shrink-0">
+                      <AvatarImage src={student.avatarUrl} />
+                      <AvatarFallback>{student.name.slice(0, 2).toUpperCase()}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{student.name}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">{student.registrationNumber || student.email}</p>
+                    </div>
+                    {isEnrolled
+                      ? <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0" />
+                      : <XCircle className="h-5 w-5 text-muted-foreground/40 flex-shrink-0" />
+                    }
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {selectedStudent && (
+        <FaceEnrollModal
+          student={selectedStudent}
+          isEnrolled={localEnrolled.has(selectedStudent.id)}
+          onClose={() => setSelectedStudent(null)}
+          onSuccess={() => {
+            setLocalEnrolled(prev => new Set([...prev, selectedStudent.id]));
+            setSelectedStudent(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────
+   Face Enroll Modal — camera + capture for a specific student
+───────────────────────────────────────────────────────── */
+function FaceEnrollModal({
+  student,
+  isEnrolled,
+  onClose,
+  onSuccess,
+}: {
+  student: User;
+  isEnrolled: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const { toast } = useToast();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [streaming, setStreaming] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [modelsLoading, setModelsLoading] = useState(true);
+
+  useEffect(() => {
+    loadFaceApiModels()
+      .then(() => setModelsLoaded(true))
+      .catch(() => toast({ variant: 'destructive', title: 'Model Error', description: 'Could not load face recognition models.' }))
+      .finally(() => setModelsLoading(false));
+  }, []);
+
+  const startCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setStreaming(true);
+      }
+    } catch {
+      toast({ variant: 'destructive', title: 'Camera Error', description: 'Could not access camera.' });
+    }
+  }, [toast]);
+
+  const stopCamera = useCallback(() => {
+    if (videoRef.current?.srcObject) {
+      (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+      videoRef.current.srcObject = null;
+    }
+    setStreaming(false);
+  }, []);
+
+  // Auto-start camera when modal opens and models are ready
+  useEffect(() => {
+    if (modelsLoaded) startCamera();
+    return () => stopCamera();
+  }, [modelsLoaded]);
+
+  const handleCapture = async () => {
+    if (!videoRef.current || !modelsLoaded) return;
+    setLoading(true);
+    try {
+      const descriptor = await getFaceEmbedding(videoRef.current);
+      if (!descriptor) throw new Error('No face detected. Ensure the student is looking at the camera.');
+
+      const res = await fetch('/api/users/enroll-face-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetUserId: student.id, descriptor }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Enrollment failed');
+      }
+
+      stopCamera();
+      toast({ title: 'Face Enrolled', description: `${student.name}'s face has been registered successfully.` });
+      onSuccess();
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Enrollment Failed', description: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={open => { if (!open) { stopCamera(); onClose(); } }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Camera className="h-5 w-5 text-primary" />
+            Enroll Face — {student.name}
+          </DialogTitle>
+          <DialogDescription>
+            {isEnrolled
+              ? 'This student already has a face registered. Capturing again will update it.'
+              : 'Position the student in front of the camera and capture their face.'}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col items-center gap-4">
+          {/* Student info */}
+          <div className="flex items-center gap-3 w-full p-3 rounded-lg bg-muted">
+            <Avatar className="h-10 w-10">
+              <AvatarImage src={student.avatarUrl} />
+              <AvatarFallback>{student.name.slice(0, 2).toUpperCase()}</AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="font-semibold text-sm">{student.name}</p>
+              <p className="text-xs text-muted-foreground">{student.registrationNumber || student.email}</p>
+            </div>
+            <Badge variant={isEnrolled ? 'default' : 'secondary'} className="ml-auto">
+              {isEnrolled ? 'Enrolled' : 'Not Enrolled'}
+            </Badge>
+          </div>
+
+          {/* Camera view */}
+          <div className="relative w-full aspect-square max-w-xs rounded-full overflow-hidden border-4 border-primary/30 bg-muted">
+            {modelsLoading && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                <p className="text-xs text-muted-foreground mt-2">Loading AI models...</p>
+              </div>
+            )}
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover scale-x-[-1]"
+            />
+            {/* Targeting overlay */}
+            {streaming && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute inset-4 rounded-full border-2 border-dashed border-primary/50 animate-[spin_8s_linear_infinite]" />
+                <div className="absolute inset-8 rounded-full border border-primary/30" />
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-muted-foreground text-center max-w-xs">
+            Ensure the student's face is clearly visible, well-lit, and centered in the circle before capturing.
+          </p>
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => { stopCamera(); onClose(); }} disabled={loading}>
+            Cancel
+          </Button>
+          <Button onClick={handleCapture} disabled={loading || !streaming || !modelsLoaded} className="gap-2">
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+            {loading ? 'Enrolling...' : 'Capture & Enroll'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
