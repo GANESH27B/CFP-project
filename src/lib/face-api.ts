@@ -1,6 +1,6 @@
 import * as faceapi from 'face-api.js';
 
-const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+const MODEL_URL = '/models';
 
 export async function loadFaceApiModels() {
     await Promise.all([

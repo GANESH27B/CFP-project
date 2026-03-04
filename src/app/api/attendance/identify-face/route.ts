@@ -20,17 +20,25 @@ export async function POST(req: NextRequest) {
 
         const db = await getDb();
 
-        // 1. Get students enrolled in this class
+        // 1. Get students enrolled in this class via classStudents collection
         const classStudents = await db.collection('classStudents').find({ classId }).toArray();
-        const studentIds = classStudents.map(cs => new ObjectId(cs.studentId));
+        const rawStudentIds = classStudents.map(cs => cs.studentId as string);
 
-        if (studentIds.length === 0) {
+        if (rawStudentIds.length === 0) {
             return NextResponse.json({ error: 'No students enrolled in this class' }, { status: 404 });
         }
 
-        // 2. Get their profiles (name and faceDescriptor)
+        // Safely convert to ObjectId - handle both string and ObjectId formats
+        const studentObjectIds = rawStudentIds.map(id => {
+            try { return new ObjectId(id); } catch { return null; }
+        }).filter(Boolean) as ObjectId[];
+
+        // 2. Get their profiles (name and faceDescriptor) - only those with face data
         const students = await db.collection('users').find({
-            _id: { $in: studentIds },
+            $or: [
+                { _id: { $in: studentObjectIds } },
+                { id: { $in: rawStudentIds } }
+            ],
             faceDescriptor: { $exists: true, $ne: null }
         }).toArray();
 
